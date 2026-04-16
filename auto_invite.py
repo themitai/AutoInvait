@@ -2,26 +2,24 @@ import asyncio
 import pandas as pd
 import random
 import os
-import sys
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.functions.channels import InviteToChannelRequest
 from telethon.errors import FloodWaitError, PeerFloodError, UserPrivacyRestrictedError, UserNotMutualContactError
 
-# --- ЗАГРУЗКА НАСТРОЕК ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ---
+# --- НАСТРОЙКИ ИЗ RAILWAY ---
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
 SESSION_STR = os.environ.get("SESSION_STR", "")
 TARGET_GROUP = os.environ.get("TARGET_GROUP", "")
 
-# Настройки диапазона строк
 START_ROW = int(os.environ.get("START_ROW", 0))
-END_ROW = int(os.environ.get("END_ROW", 100))
-INVITE_LIMIT = int(os.environ.get("INVITE_LIMIT", 20))
+END_ROW = int(os.environ.get("END_ROW", 1000))
+INVITE_LIMIT = int(os.environ.get("INVITE_LIMIT", 10))
 
 async def main():
     if not SESSION_STR or not API_ID:
-        print("❌ Ошибка: Переменные API_ID или SESSION_STR не заданы!")
+        print("❌ Ошибка: Переменные окружения не заполнены!")
         return
 
     client = TelegramClient(StringSession(SESSION_STR), API_ID, API_HASH)
@@ -29,63 +27,64 @@ async def main():
     try:
         await client.start()
         me = await client.get_me()
-        print(f"✅ Авторизован как: {me.first_name} (ID: {me.id})")
-        print(f"📊 Сектор строк: {START_ROW} - {END_ROW}")
+        print(f"✅ Авторизован как: {me.first_name}")
     except Exception as e:
-        print(f"❌ Ошибка авторизации: {e}")
+        print(f"❌ Ошибка входа: {e}")
         return
 
-    # Загрузка базы данных
+    # Загрузка Excel
     try:
         df = pd.read_excel('active_members_ColumbChat.xlsx')
-        # Берем только нужный нам кусок из Excel
-        users_to_invite = df['ID'].iloc[START_ROW:END_ROW].tolist()
-        print(f"📂 Загружено {len(users_to_invite)} потенциальных контактов из сектора.")
+        # Выбираем только тех, у кого ЕСТЬ Username в указанном диапазоне
+        subset = df.iloc[START_ROW:END_ROW]
+        # Очищаем от пустых строк в колонке Username
+        users_to_invite = subset['Username'].dropna().tolist()
+        
+        print(f"📊 В секторе найдено {len(users_to_invite)} пользователей с Username.")
     except Exception as e:
-        print(f"❌ Ошибка чтения Excel: {e}")
+        print(f"❌ Ошибка Excel: {e}. Проверь, что колонка называется 'Username'")
         return
 
     try:
         target_entity = await client.get_entity(TARGET_GROUP)
     except Exception as e:
-        print(f"❌ Не удалось найти целевую группу: {e}")
+        print(f"❌ Группа не найдена: {e}")
         return
 
     added_count = 0
 
-    for user_id in users_to_invite:
+    for username in users_to_invite:
         if added_count >= INVITE_LIMIT:
-            print(f"🏁 Лимит {INVITE_LIMIT} инвайтов на сегодня выполнен.")
+            print(f"🏁 Лимит {INVITE_LIMIT} выполнен.")
             break
             
         try:
-            print(f"⏳ Попытка добавить ID {user_id}...")
-            # Сама функция инвайта
-            await client(InviteToChannelRequest(target_entity, [user_id]))
+            # Убеждаемся, что username начинается с @ (Telethon это любит)
+            user_to_add = username if username.startswith('@') else f'@{username}'
+            
+            print(f"⏳ Приглашаю {user_to_add}...")
+            await client(InviteToChannelRequest(target_entity, [user_to_add]))
             
             added_count += 1
-            print(f"🚀 Успешно добавлено: {added_count}/{INVITE_LIMIT}")
+            print(f"🚀 Успешно: {added_count}/{INVITE_LIMIT}")
             
-            # Безопасная пауза: от 3 до 7 минут
-            wait = random.randint(180, 420)
-            print(f"😴 Пауза {wait} сек. для защиты от бана...")
+            wait = random.randint(200, 450) # Чуть увеличил паузу для безопасности
+            print(f"😴 Пауза {wait} сек...")
             await asyncio.sleep(wait)
             
         except UserPrivacyRestrictedError:
-            print(f"🚫 У ID {user_id} инвайты закрыты настройками приватности.")
-        except UserNotMutualContactError:
-            print(f"🚫 Ограничение: ID {user_id} требует взаимного контакта.")
+            print(f"🚫 {username} скрыл инвайты настройками.")
         except PeerFloodError:
-            print("⚠️ СТОП! Аккаунт получил временное ограничение (Flood).")
+            print("⚠️ Ограничение от Telegram (Flood). Останавливаюсь.")
             break
         except FloodWaitError as e:
-            print(f"⚠️ Нужно подождать {e.seconds} секунд...")
+            print(f"⚠️ Ждем {e.seconds} сек...")
             await asyncio.sleep(e.seconds)
         except Exception as e:
-            print(f"❌ Непредвиденная ошибка с {user_id}: {e}")
-            await asyncio.sleep(10)
+            print(f"❌ Ошибка с {username}: {e}")
+            await asyncio.sleep(5)
 
-    print(f"\n✅ Сессия завершена. Добавлено за сегодня: {added_count}")
+    print(f"✅ Готово. Добавлено: {added_count}")
     await client.disconnect()
 
 if __name__ == '__main__':
