@@ -1,91 +1,62 @@
-import asyncio
-import pandas as pd
-import random
 import os
-from telethon import TelegramClient
+import pandas as pd
+import datetime
+import random
+import time
+from telethon.sync import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.functions.channels import InviteToChannelRequest
-from telethon.errors import FloodWaitError, PeerFloodError, UserPrivacyRestrictedError, UserNotMutualContactError
+from telethon.errors import UserPrivacyRestrictedError, UserAlreadyParticipantError, FloodWaitError
 
-# --- НАСТРОЙКИ ИЗ RAILWAY ---
-API_ID = int(os.environ.get("API_ID", 0))
-API_HASH = os.environ.get("API_HASH", "")
-SESSION_STR = os.environ.get("SESSION_STR", "")
-TARGET_GROUP = os.environ.get("TARGET_GROUP", "")
+# --- ПЕРЕМЕННЫЕ ИЗ RAILWAY ---
+API_ID = int(os.getenv('API_ID'))
+API_HASH = os.getenv('API_HASH')
+SESSION_STR = os.getenv('SESSION_STR')
+CHANNEL_USERNAME = os.getenv('CHANNEL_USERNAME') 
+START_ROW = int(os.getenv('START_ROW', 0))
 
-START_ROW = int(os.environ.get("START_ROW", 0))
-END_ROW = int(os.environ.get("END_ROW", 1000))
-INVITE_LIMIT = int(os.environ.get("INVITE_LIMIT", 10))
+# Установи здесь дату и час, когда ты запускаешь эту систему (например, сегодня 12:00)
+START_PROJECT_DATE = datetime.datetime(2026, 4, 17, 12, 0) 
 
-async def main():
-    if not SESSION_STR or not API_ID:
-        print("❌ Ошибка: Переменные окружения не заполнены!")
-        return
-
-    client = TelegramClient(StringSession(SESSION_STR), API_ID, API_HASH)
-    
-    try:
-        await client.start()
-        me = await client.get_me()
-        print(f"✅ Авторизован как: {me.first_name}")
-    except Exception as e:
-        print(f"❌ Ошибка входа: {e}")
-        return
-
-    # Загрузка Excel
+def main():
     try:
         df = pd.read_excel('active_members_ColumbChat.xlsx')
-        # Выбираем только тех, у кого ЕСТЬ Username в указанном диапазоне
-        subset = df.iloc[START_ROW:END_ROW]
-        # Очищаем от пустых строк в колонке Username
-        users_to_invite = subset['Username'].dropna().tolist()
+    except Exception as e:
+        print(f"❌ Ошибка чтения файла: {e}")
+        return
+
+    # Считаем сдвиг: сколько полных часов прошло с момента старта проекта
+    now = datetime.datetime.now()
+    hours_passed = int((now - START_PROJECT_DATE).total_seconds() // 3600)
+    
+    # Определяем текущую строку для этого конкретного запуска
+    current_index = START_ROW + hours_passed
+
+    if current_index >= len(df):
+        print("✅ Сектор полностью отработан.")
+        return
+
+    user_to_invite = str(df.iloc[current_index]['Username']).replace('@', '')
+
+    with TelegramClient(StringSession(SESSION_STR), API_ID, API_HASH) as client:
+        print(f"🤖 Бот запущен. Индекс строки: {current_index}. Юзер: @{user_to_invite}")
         
-        print(f"📊 В секторе найдено {len(users_to_invite)} пользователей с Username.")
-    except Exception as e:
-        print(f"❌ Ошибка Excel: {e}. Проверь, что колонка называется 'Username'")
-        return
+        # Небольшой рандом (1-5 мин), чтобы не было ровно в 15, 30 или 45 минут
+        wait_sec = random.randint(30, 300)
+        print(f"😴 Дополнительная пауза: {wait_sec} сек...")
+        time.sleep(wait_sec)
 
-    try:
-        target_entity = await client.get_entity(TARGET_GROUP)
-    except Exception as e:
-        print(f"❌ Группа не найдена: {e}")
-        return
-
-    added_count = 0
-
-    for username in users_to_invite:
-        if added_count >= INVITE_LIMIT:
-            print(f"🏁 Лимит {INVITE_LIMIT} выполнен.")
-            break
-            
         try:
-            # Убеждаемся, что username начинается с @ (Telethon это любит)
-            user_to_add = username if username.startswith('@') else f'@{username}'
-            
-            print(f"⏳ Приглашаю {user_to_add}...")
-            await client(InviteToChannelRequest(target_entity, [user_to_add]))
-            
-            added_count += 1
-            print(f"🚀 Успешно: {added_count}/{INVITE_LIMIT}")
-            
-            wait = random.randint(200, 450) # Чуть увеличил паузу для безопасности
-            print(f"😴 Пауза {wait} сек...")
-            await asyncio.sleep(wait)
-            
+            client(InviteToChannelRequest(CHANNEL_USERNAME, [user_to_invite]))
+            print(f"🚀 Успешно: @{user_to_invite}")
+        except UserAlreadyParticipantError:
+            print(f"👥 @{user_to_invite} уже в канале.")
         except UserPrivacyRestrictedError:
-            print(f"🚫 {username} скрыл инвайты настройками.")
-        except PeerFloodError:
-            print("⚠️ Ограничение от Telegram (Flood). Останавливаюсь.")
-            break
+            print(f"🔒 У @{user_to_invite} закрыты инвайты.")
         except FloodWaitError as e:
-            print(f"⚠️ Ждем {e.seconds} сек...")
-            await asyncio.sleep(e.seconds)
+            print(f"⚠️ Флуд-контроль на {e.seconds} сек. Аккаунту нужен отдых.")
         except Exception as e:
-            print(f"❌ Ошибка с {username}: {e}")
-            await asyncio.sleep(5)
-
-    print(f"✅ Готово. Добавлено: {added_count}")
-    await client.disconnect()
+            print(f"❌ Ошибка: {e}")
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    main()
